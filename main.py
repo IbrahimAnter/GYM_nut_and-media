@@ -161,6 +161,21 @@ class SubstitutionRequest(BaseModel):
     meal_name: str
 
 
+class GeneratePlanRequest(BaseModel):
+    name: str
+    email: str
+    phone: str
+    age: int
+    gender: str
+    height: float
+    weight: float
+    fitnessGoal: str
+    activityLevel: str = "Sedentary"
+    experienceLevel: str = "Beginner"
+    workoutLocation: str = "Home"
+    dietaryPreference: str = ""
+
+
 def save_nutrition_plan(request_id: str, payload: MealPlanRequest, full_plan: dict) -> None:
     try:
         targets = full_plan.get("daily_targets", {})
@@ -444,184 +459,120 @@ def health() -> Dict[str, Any]:
     }
 
 
-
-
-# ---------------------------------------------------------------------------
-# Simple backend contract endpoint for Khaled / mobile backend
-# ---------------------------------------------------------------------------
-class GeneratePlanRequest(BaseModel):
-    name: Optional[str] = None
-    email: Optional[str] = None
-    phone: Optional[str] = None
-
-    age: int = Field(..., ge=10, le=100)
-    gender: str = Field(..., examples=["male", "female"])
-    height: float = Field(..., ge=100, le=250, description="Height in centimeters")
-    weight: float = Field(..., ge=30, le=300, description="Weight in kilograms")
-
-    fitnessGoal: str = Field(..., examples=["lose", "maintain", "gain"])
-    activityLevel: str = Field("Sedentary", examples=["Sedentary", "Lightly Active", "Moderately Active", "Very Active"])
-    experienceLevel: str = Field("Beginner", examples=["Beginner", "Intermediate", "Advanced"])
-    workoutLocation: str = Field("Home", examples=["Home", "Gym"])
-    dietaryPreference: str = Field("normal", examples=["normal", "vegetarian", "high_protein"])
-    user_id: Optional[str] = None
-    save_to_db: bool = True
-
-
-def _map_activity_level(value: str) -> float:
-    normalized = (value or "").strip().lower().replace("_", " ").replace("-", " ")
-    mapping = {
+@app.post("/generate-plan")
+def generate_plan_endpoint(payload: GeneratePlanRequest) -> dict:
+    goal_map = {
+        "lose": "lose", "weight_loss": "lose", "fat_loss": "lose",
+        "maintain": "maintain", "maintenance": "maintain",
+        "gain": "gain", "muscle_gain": "gain", "bulk": "gain"
+    }
+    mapped_goal = goal_map.get(payload.fitnessGoal.lower(), "maintain")
+    
+    activity_map = {
         "sedentary": 1.2,
-        "light": 1.375,
         "lightly active": 1.375,
-        "moderate": 1.55,
         "moderately active": 1.55,
-        "active": 1.55,
         "very active": 1.725,
-        "super active": 1.9,
+        "super active": 1.9
     }
-    return mapping.get(normalized, 1.2)
-
-
-def _map_goal(value: str) -> Goal:
-    normalized = (value or "").strip().lower().replace("_", " ").replace("-", " ")
-    if normalized in {"lose", "loss", "weight loss", "fat loss", "cut", "cutting"}:
-        return "lose"
-    if normalized in {"gain", "muscle gain", "bulk", "bulking"}:
-        return "gain"
-    return "maintain"
-
-
-def _bmi_category(bmi: float) -> str:
+    mapped_activity = activity_map.get(payload.activityLevel.lower(), 1.2)
+    
+    height_m = payload.height / 100.0
+    bmi = payload.weight / (height_m ** 2) if height_m > 0 else 0
+    
     if bmi < 18.5:
-        return "underweight"
-    if bmi < 25:
-        return "normal"
-    if bmi < 30:
-        return "overweight"
-    return "obese"
-
-
-def _generate_simple_workout_plan(goal: str, level: str, location: str, days: int = 4) -> dict:
-    goal_key = _map_goal(goal)
-    level_text = (level or "Beginner").strip()
-    location_text = (location or "Home").strip()
-
-    if goal_key == "lose":
-        focus = "fat loss + strength endurance"
-        cardio = "20-30 minutes moderate cardio after strength or on rest days"
-    elif goal_key == "gain":
-        focus = "muscle gain + progressive overload"
-        cardio = "10-15 minutes light cardio for warm-up and recovery"
+        bmi_cat = "Underweight"
+    elif bmi < 25:
+        bmi_cat = "Normal weight"
+    elif bmi < 30:
+        bmi_cat = "Overweight"
     else:
-        focus = "maintenance + balanced fitness"
-        cardio = "15-20 minutes cardio 2-3 times weekly"
-
-    if location_text.lower() == "gym":
-        days_plan = [
-            {"day": 1, "title": "Upper Body", "exercises": ["Bench press", "Lat pulldown", "Shoulder press", "Cable row", "Biceps curl", "Triceps pushdown"]},
-            {"day": 2, "title": "Lower Body", "exercises": ["Squat", "Leg press", "Romanian deadlift", "Lunges", "Calf raises", "Plank"]},
-            {"day": 3, "title": "Push + Core", "exercises": ["Incline press", "Dumbbell shoulder press", "Chest fly", "Lateral raise", "Crunches", "Leg raises"]},
-            {"day": 4, "title": "Pull + Legs", "exercises": ["Deadlift", "Seated row", "Hamstring curl", "Goblet squat", "Face pull", "Farmer carry"]},
-        ]
-    else:
-        days_plan = [
-            {"day": 1, "title": "Full Body A", "exercises": ["Push-ups", "Bodyweight squats", "Glute bridge", "Plank", "Mountain climbers"]},
-            {"day": 2, "title": "Cardio + Core", "exercises": ["Jumping jacks", "High knees", "Crunches", "Leg raises", "Side plank"]},
-            {"day": 3, "title": "Full Body B", "exercises": ["Lunges", "Pike push-ups", "Superman hold", "Wall sit", "Burpees"]},
-            {"day": 4, "title": "Mobility + Conditioning", "exercises": ["Dynamic stretching", "Squat pulses", "Bear crawl", "Plank shoulder taps", "Light jog"]},
-        ]
-
-    return {
-        "goal": goal_key,
-        "focus": focus,
-        "experienceLevel": level_text,
-        "workoutLocation": location_text,
-        "days_per_week": days,
-        "cardio_recommendation": cardio,
-        "days": days_plan[:days],
-    }
-
-
-@app.post("/generate-plan", tags=["Plan"])
-def generate_plan(payload: GeneratePlanRequest) -> dict:
-    """One simple endpoint for the backend: send user data, receive workout + diet result."""
-    request_id = str(uuid.uuid4())
-    goal = _map_goal(payload.fitnessGoal)
-    activity_factor = _map_activity_level(payload.activityLevel)
-
-    gender = payload.gender.lower().strip()
-    if gender in {"m", "male"}:
-        gender = "male"
-    elif gender in {"f", "female"}:
-        gender = "female"
-    else:
-        gender = "male"
-
+        bmi_cat = "Obese"
+        
+    mapped_gender = payload.gender.lower().strip()
+    if mapped_gender == "m":
+        mapped_gender = "male"
+    elif mapped_gender == "f":
+        mapped_gender = "female"
+    elif mapped_gender not in ["male", "female"]:
+        mapped_gender = "male"
+        
     nutrition_plan = generate_nutrition_plan(
         age=payload.age,
-        gender=gender,
+        gender=mapped_gender, # type: ignore
         height=payload.height,
         weight=payload.weight,
-        activity_level=activity_factor,
-        goal=goal,
+        activity_level=mapped_activity,
+        goal=mapped_goal, # type: ignore
     )
-
+    
     full_plan = generate_full_meal_plan(
         nutrition_plan=nutrition_plan,
         num_meals=4,
-        strategy="strict",
+        strategy="strict"
     )
-
-    bmi = payload.weight / ((payload.height / 100) ** 2)
-
-    # Save to PostgreSQL using the existing nutrition table if requested.
-    if payload.save_to_db:
-        try:
-            save_payload = MealPlanRequest(
+    
+    targets = full_plan.get("daily_targets", {})
+    
+    request_id = str(uuid.uuid4())
+    try:
+        with db_session() as db:
+            db.add(NutritionPlanRecord(
+                request_id=request_id,
+                user_id=payload.email,
                 age=payload.age,
-                gender=gender,
-                height=payload.height,
-                weight=payload.weight,
-                activity_level=activity_factor,
-                goal=goal,
-                user_id=payload.user_id,
-                save_to_db=True,
+                gender=mapped_gender,
+                height_cm=payload.height,
+                weight_kg=payload.weight,
+                activity_level=mapped_activity,
+                goal=mapped_goal,
                 num_meals=4,
                 strategy="strict",
-            )
-            save_nutrition_plan(request_id, save_payload, full_plan)
-        except Exception:
-            pass
-
-    response = {
-        "request_id": request_id,
+                daily_calories=targets.get("daily_calories"),
+                protein_grams=targets.get("protein_grams"),
+                carbs_grams=targets.get("carbs_grams"),
+                fat_grams=targets.get("fat_grams"),
+                bmr=targets.get("bmr"),
+                tdee=targets.get("tdee"),
+                quality_score=full_plan.get("quality_score"),
+                optimized=full_plan.get("optimized"),
+                plan_totals_json=full_plan.get("daily_plan_totals"),
+                meals_json=full_plan.get("meals"),
+                validation_json=full_plan.get("validation"),
+                raw_response_json=full_plan,
+            ))
+    except Exception:
+        pass
+        
+    return {
         "status": "success",
         "user": {
             "name": payload.name,
             "email": payload.email,
             "phone": payload.phone,
             "age": payload.age,
-            "gender": gender,
+            "gender": payload.gender,
             "height": payload.height,
-            "weight": payload.weight,
+            "weight": payload.weight
         },
-        "bmi": round(bmi, 2),
-        "bmi_category": _bmi_category(bmi),
-        "daily_calorie_target": full_plan["daily_targets"]["daily_calories"],
+        "bmi": round(bmi, 1),
+        "bmi_category": bmi_cat,
+        "daily_calorie_target": targets.get("daily_calories", 0),
         "macros": {
-            "protein_grams": full_plan["daily_targets"]["protein_grams"],
-            "carbs_grams": full_plan["daily_targets"]["carbs_grams"],
-            "fat_grams": full_plan["daily_targets"]["fat_grams"],
+            "protein_grams": targets.get("protein_grams", 0),
+            "carbs_grams": targets.get("carbs_grams", 0),
+            "fat_grams": targets.get("fat_grams", 0)
         },
         "recommendations": {
-            "workout_plan": _generate_simple_workout_plan(payload.fitnessGoal, payload.experienceLevel, payload.workoutLocation),
-            "diet_plan": full_plan["meals"],
-        },
+            "diet_plan": full_plan.get("meals", []),
+            "workout_plan": {
+                "fitnessGoal": payload.fitnessGoal,
+                "experienceLevel": payload.experienceLevel,
+                "workoutLocation": payload.workoutLocation,
+                "message": "Workout plan can be generated from the workout module."
+            }
+        }
     }
-
-    log_api_request("plan", "/generate-plan", request_id, payload.user_id, payload.model_dump(), response)
-    return response
 
 
 # Nutrition endpoints
